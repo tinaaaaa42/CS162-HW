@@ -11,7 +11,7 @@
 /* Global coordinator state. */
 coordinator* state;
 
-extern void coordinator_1(struct svc_req*, struct SVCXPRT*);
+extern void coordinator_1(struct svc_req*, SVCXPRT*);
 
 /* Set up and run RPC server. */
 int main(int argc, char** argv) {
