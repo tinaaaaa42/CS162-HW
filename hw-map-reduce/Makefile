@@ -43,6 +43,7 @@ ifeq "$(UNAME)" "arm64"
 	CFLAGS += -I/usr/lib/arm64-linux-gnu/glib-2.0/include
 endif
 LDLIBS += -lnsl -lglib-2.0 -ltirpc
+RPCGENFLAGS =
 
 # Targets 
 
