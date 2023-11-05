@@ -18,7 +18,7 @@
 
 /* TODO: Add global state. */
 
-extern void kvstore_1(struct svc_req *, struct SVCXPRT *);
+extern void kvstore_1(struct svc_req *, SVCXPRT *);
 
 /* Set up and run RPC server. */
 int main(int argc, char **argv) {

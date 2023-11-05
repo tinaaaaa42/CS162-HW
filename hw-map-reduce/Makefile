@@ -31,9 +31,18 @@ OBJECTS_COORDINATOR = $(SOURCES.c:%.c=%.o) $(SOURCES_COORDINATOR.c:%.c=%.o) $(TA
 OBJECTS_CLIENT = $(SOURCES.c:%.c=%.o) $(SOURCES_CLIENT.c:%.c=%.o) $(TARGETS_CLNT.c:%.c=%.o)
 # Compiler flags 
 
-CFLAGS += -g -I/usr/include/glib-2.0 -I/usr/lib/x86_64-linux-gnu/glib-2.0/include
-LDLIBS += -lnsl -lglib-2.0
-RPCGENFLAGS =
+UNAME := $(shell uname -m)
+CFLAGS += -g -I/usr/include/tirpc -I/usr/include/glib-2.0
+ifeq "$(UNAME)" "x86_64"
+	CFLAGS +=  -I/usr/lib/x86_64-linux-gnu/glib-2.0/include
+endif
+ifeq "$(UNAME)" "aarch64"
+	CFLAGS += -I/usr/lib/aarch64-linux-gnu/glib-2.0/include
+endif
+ifeq "$(UNAME)" "arm64"
+	CFLAGS += -I/usr/lib/arm64-linux-gnu/glib-2.0/include
+endif
+LDLIBS += -lnsl -lglib-2.0 -ltirpc
 
 # Targets 
 
