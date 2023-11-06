@@ -55,4 +55,3 @@ $(SERVER) : $(OBJECTS_SVC) $(BIN_DIR)
 
  clean:
 	 $(RM) core $(TARGETS) $(OBJECTS_CLNT) $(OBJECTS_SVC) $(CLIENT) $(SERVER)
-
