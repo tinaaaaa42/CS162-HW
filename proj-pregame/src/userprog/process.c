@@ -69,6 +69,97 @@ pid_t process_execute(const char* file_name) {
   return tid;
 }
 
+/* Push the argc and argv onto the stack. */
+static void push_args(char* file_name, void** pesp) {
+  int argc = 0;
+  char* token = NULL;
+  char* rest;
+  char* file_name_copy;
+  char* esp = (char*)*pesp;
+  char** argv;
+  int argv_str_size = 0;
+  int size;
+  int i;
+  int stack_align_size;
+
+  // calculate argc
+  file_name_copy = malloc(strlen(file_name) + 1);
+  strlcpy(file_name_copy, file_name, strlen(file_name) + 1);
+  for (token = strtok_r(file_name_copy, " ", &rest); token != NULL;
+       token = strtok_r(NULL, " ", &rest)) {
+    argc++;
+  }
+  free(file_name_copy);
+  
+  // initialize argv
+  argv = malloc(sizeof(char*) * argc);
+
+  // parse the arguments
+  i = 0;
+  file_name_copy = malloc(strlen(file_name) + 1);
+  strlcpy(file_name_copy, file_name, strlen(file_name) + 1);
+  for (token = strtok_r(file_name_copy, " ", &rest); token != NULL;
+       token = strtok_r(NULL, " ", &rest)) {
+    size = strlen(token) + 1;
+    esp -= size;
+    strlcpy(esp, token, size);
+
+    argv[i++] = esp;
+    argv_str_size += size; 
+  }
+  free(file_name_copy);
+
+  // stack align to 0x10
+  stack_align_size = 0x10 - argv_str_size % 0x10;
+  if (argv_str_size % 0x10) {
+    esp -= stack_align_size;
+    memset(esp, 0, stack_align_size);
+  }
+
+  // push argv to stack
+  // argv[argc]
+  esp -= 0x4;
+  *(char**)esp = 0;
+
+  // argv[i]
+  for (i = argc - 1; i >= 0; --i) {
+    esp -= 0x4;
+    *(char**)esp = argv[i];
+  }
+
+  // argv
+  char* argv0_address = esp;
+  esp -= 0x4;
+  *(char**)esp = argv0_address;
+
+  // argc
+  esp -= 0x4;
+  *(int*)esp = argc;
+
+  // fake return address
+  esp -= 0x4;
+  *(char**)esp = 0;
+
+  *pesp = (void*) esp;
+  free(argv);
+}
+
+/* Parse to get the real file name from the arguments. */
+static char* get_real_file_name(const char* file_name) {
+  const char* space = strchr(file_name, ' ');
+  size_t length;
+  if (space) {
+    length = space - file_name;
+  } else {
+    length = strlen(file_name);
+  }
+
+  char* real_file_name = malloc(length + 1);
+  strlcpy(real_file_name, file_name, length + 1);
+
+  return real_file_name;
+}
+
 /* A thread function that loads a user process and starts it
    running. */
 static void start_process(void* file_name_) {
@@ -99,7 +190,10 @@ static void start_process(void* file_name_) {
     if_.gs = if_.fs = if_.es = if_.ds = if_.ss = SEL_UDSEG;
     if_.cs = SEL_UCSEG;
     if_.eflags = FLAG_IF | FLAG_MBS;
-    success = load(file_name, &if_.eip, &if_.esp);
+
+    char* real_file_name = get_real_file_name(file_name);
+    success = load(real_file_name, &if_.eip, &if_.esp);
+    free(real_file_name);
   }
 
   /* Handle failure with succesful PCB malloc. Must free the PCB */
@@ -112,6 +206,8 @@ static void start_process(void* file_name_) {
     free(pcb_to_free);
   }
 
+  push_args(file_name, &if_.esp);
+
   /* Clean up. Exit on failure or jump to userspace */
   palloc_free_page(file_name);
   if (!success) {
@@ -120,7 +216,7 @@ static void start_process(void* file_name_) {
   }
 
   /* Allocate space for userprog */
-  if_.esp -= 0x14;
+  // if_.esp -= 0x14;
 
   /* Start the user process by simulating a return from an
      interrupt, implemented by intr_exit (in
