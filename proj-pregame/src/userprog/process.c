@@ -168,6 +168,7 @@ static void start_process(void* file_name_) {
   struct intr_frame if_;
   bool success, pcb_success;
 
+  char* real_file_name = get_real_file_name(file_name);
   /* Allocate process control block */
   struct process* new_pcb = malloc(sizeof(struct process));
   success = pcb_success = new_pcb != NULL;
@@ -181,7 +182,7 @@ static void start_process(void* file_name_) {
 
     // Continue initializing the PCB as normal
     t->pcb->main_thread = t;
-    strlcpy(t->pcb->process_name, t->name, sizeof t->name);
+    strlcpy(t->pcb->process_name, real_file_name, strlen(real_file_name) + 1);
   }
 
   /* Initialize interrupt frame and load executable. */
@@ -191,10 +192,9 @@ static void start_process(void* file_name_) {
     if_.cs = SEL_UCSEG;
     if_.eflags = FLAG_IF | FLAG_MBS;
 
-    char* real_file_name = get_real_file_name(file_name);
     success = load(real_file_name, &if_.eip, &if_.esp);
-    free(real_file_name);
   }
+  free(real_file_name);
 
   /* Handle failure with succesful PCB malloc. Must free the PCB */
   if (!success && pcb_success) {
