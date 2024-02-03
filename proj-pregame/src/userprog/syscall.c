@@ -7,6 +7,8 @@
 
 static void syscall_handler(struct intr_frame*);
 
+static void write_handler(uint32_t*, uint32_t*);
+
 void syscall_init(void) { intr_register_int(0x30, 3, INTR_ON, syscall_handler, "syscall"); }
 
 static void syscall_handler(struct intr_frame* f UNUSED) {
@@ -25,5 +27,18 @@ static void syscall_handler(struct intr_frame* f UNUSED) {
     f->eax = args[1];
     printf("%s: exit(%d)\n", thread_current()->pcb->process_name, args[1]);
     process_exit();
+  } else if (args[0] == SYS_WRITE) {
+    write_handler(args, &f->eax);
+  }
+}
+
+static void write_handler(uint32_t* args, uint32_t* eax) {
+  int fd = args[1];
+  const void* buffer = (const void*) args[2];
+  unsigned size = args[3];
+
+  if (fd == 1) {
+    putbuf(buffer, size);
+    *eax = size;
   }
 }
