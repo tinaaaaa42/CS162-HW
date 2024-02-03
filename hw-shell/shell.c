@@ -28,8 +28,17 @@ struct termios shell_tmodes;
 /* Process group id for the shell */
 pid_t shell_pgid;
 
+pid_t pgid;
+
+struct sigaction sigint_ign_action, sigint_default_action;
+struct sigaction sigtstp_ign_action, sigtstp_default_action;
+
+
+
 int cmd_exit(struct tokens* tokens);
 int cmd_help(struct tokens* tokens);
+int cmd_pwd(struct tokens* tokens);
+int cmd_cd(struct tokens* tokens);
 
 /* Built-in command functions take token array (see parse.h) and return int */
 typedef int cmd_fun_t(struct tokens* tokens);
@@ -41,9 +50,20 @@ typedef struct fun_desc {
   char* doc;
 } fun_desc_t;
 
+/* Override the handler of SIGINT. 
+ * Kill the foreground process, but not the shell. */
+void sigint_handler(int sig) {
+  if (shell_is_interactive) {
+    printf("\n");
+    fflush(stdout);
+  }
+}
+
 fun_desc_t cmd_table[] = {
     {cmd_help, "?", "show this help menu"},
     {cmd_exit, "exit", "exit the command shell"},
+    {cmd_pwd, "pwd", "print the current working directory to standard output"},
+    {cmd_cd, "cd", "change the current working directory to the specified directory"},
 };
 
 /* Prints a helpful description for the given command */
@@ -55,6 +75,29 @@ int cmd_help(unused struct tokens* tokens) {
 
 /* Exits this shell */
 int cmd_exit(unused struct tokens* tokens) { exit(0); }
+
+/* Prints the current working directory to standard output */
+int cmd_pwd(unused struct tokens* tokens) {
+  char cwd[1024];
+  if (getcwd(cwd, sizeof(cwd)) != NULL) {
+    fprintf(stdout, "%s\n", cwd);
+  } else {
+    perror("getcwd() error");
+  }
+  return 1;
+}
+
+/* Changes the current working directory to the specified directory */
+int cmd_cd(struct tokens* tokens) {
+  if (tokens_get_length(tokens) != 2) {
+    fprintf(stderr, "cd: missing argument\n");
+    return 0;
+  }
+  if (chdir(tokens_get_token(tokens, 1)) != 0) {
+    perror("chdir() error");
+  }
+  return 1;
+}
 
 /* Looks up the built-in command, if it exists. */
 int lookup(char cmd[]) {
@@ -68,6 +111,20 @@ int lookup(char cmd[]) {
 void init_shell() {
   /* Our shell is connected to standard input. */
   shell_terminal = STDIN_FILENO;
+
+  signal(SIGINT, SIG_IGN);
+  signal(SIGTSTP, SIG_IGN);
+  signal(SIGTTOU, SIG_IGN);
+  // signal(SIGTTIN, SIG_IGN);
+  // sigint_ign_action.sa_handler = SIG_IGN;
+  // sigemptyset(&sigint_ign_action.sa_mask);
+  // sigint_ign_action.sa_flags = 0;
+  // sigaction(SIGINT, &sigint_ign_action, &sigint_default_action);
+
+  // sigtstp_ign_action.sa_handler = SIG_IGN;
+  // sigemptyset(&sigtstp_ign_action.sa_mask);
+  // sigtstp_ign_action.sa_flags = 0;
+  // sigaction(SIGTSTP, &sigtstp_ign_action, &sigtstp_default_action);
 
   /* Check if we are running interactively */
   shell_is_interactive = isatty(shell_terminal);
@@ -90,6 +147,57 @@ void init_shell() {
   }
 }
 
+int file_exists(char *filename) {
+  return access(filename, F_OK) != -1;
+}
+
+void execute_command(char *cmd, char *args[]) {
+  char *path = getenv("PATH");
+
+  // set up redirection
+  for (int i = 0; args[i] != NULL; i++) {
+    if (strcmp(args[i], ">") == 0) {
+      int fd = open(args[i + 1], O_WRONLY | O_CREAT | O_TRUNC, 0644);
+      if (fd == -1) {
+        perror("open() error");
+        exit(1);
+      }
+      dup2(fd, STDOUT_FILENO);
+      close(fd);
+      args[i] = NULL;
+    } else if (strcmp(args[i], "<") == 0) {
+      int fd = open(args[i + 1], O_RDONLY);
+      if (fd == -1) {
+        perror("open() error");
+        exit(1);
+      }
+      dup2(fd, STDIN_FILENO);
+      close(fd);
+      args[i] = NULL;
+    }
+  }
+  
+  if (cmd[0] == '/') {
+    execv(cmd, args);
+    perror("execv() error");
+    exit(1);
+  } else {
+    char full_path[1024];
+    char *token, *saveptr;
+    for (token = strtok_r(path, ":", &saveptr); token != NULL; token = strtok_r(NULL, ":", &saveptr)) {
+      snprintf(full_path, sizeof(full_path), "%s/%s", token, cmd);
+      if (file_exists(full_path)) {
+        execv(full_path, args);
+        perror("execv() error");
+        exit(1);
+      }
+    }
+  }
+
+  fprintf(stderr, "Command not found: %s\n", cmd);
+
+}
+
 int main(unused int argc, unused char* argv[]) {
   init_shell();
 
@@ -110,8 +218,95 @@ int main(unused int argc, unused char* argv[]) {
     if (fundex >= 0) {
       cmd_table[fundex].fun(tokens);
     } else {
-      /* REPLACE this to run commands as programs. */
-      fprintf(stdout, "This shell doesn't know how to run programs.\n");
+      // support pipes
+      int pipe_num = 0;
+      for (size_t i = 0; i < tokens_get_length(tokens); i++) {
+        if (strcmp(tokens_get_token(tokens, i), "|") == 0) {
+          pipe_num++;
+        }
+      }
+
+      int pipes[pipe_num + 1][2];
+      for (int i = 0; i < pipe_num; i++) {
+        if (pipe(pipes[i]) == -1) {
+          perror("pipe() error");
+          exit(1);
+        }
+      }
+
+      char *token, *saveptr;
+      int i = 0;
+
+      for (token = strtok_r(line, "|", &saveptr); token != NULL; token = strtok_r(NULL, "|", &saveptr)) {
+        pid_t cpid;
+        struct tokens* sub_tokens = tokenize(token);
+        char *cmd = tokens_get_token(sub_tokens, 0);
+        char *sub_args[tokens_get_length(sub_tokens) + 1];
+        for (size_t j = 0; j < tokens_get_length(sub_tokens); j++) {
+          sub_args[j] = tokens_get_token(sub_tokens, j);
+        }
+        sub_args[tokens_get_length(sub_tokens)] = NULL;
+
+        cpid = fork();
+
+        if (cpid == 0) {
+          signal(SIGINT, SIG_DFL);
+          signal(SIGTSTP, SIG_DFL);
+          signal(SIGTTOU, SIG_DFL);
+          // signal(SIGTTIN, SIG_DFL);
+          // sigaction(SIGINT, &sigint_default_action, NULL);
+          // sigaction(SIGTSTP, &sigtstp_default_action, NULL);
+
+          if (i == 0) {
+            pgid = getpid();
+            setpgid(0, 0);
+          } else {
+            setpgid(0, pgid);
+          }
+
+          if (i > 0) {
+            dup2(pipes[i - 1][0], STDIN_FILENO);
+          }
+
+          if (i < pipe_num) {
+            dup2(pipes[i][1], STDOUT_FILENO);
+          }          
+          
+          for (int j = 0; j < pipe_num; j++) {
+            close(pipes[j][0]);
+            close(pipes[j][1]);
+          }
+
+          // tokens_destroy(sub_tokens);
+          
+          execute_command(cmd, sub_args);
+          exit(1);
+        }
+        
+        if (i == 0) {
+          setpgid(cpid, cpid);
+          pgid = cpid;
+        } else {
+          setpgid(cpid, pgid);
+        }
+
+        i++;
+      }
+
+      for (int i = 0; i < pipe_num; i++) {
+        close(pipes[i][0]);
+        close(pipes[i][1]);
+      }
+
+      tcsetpgrp(STDIN_FILENO, pgid);
+
+      // for (int i = 0; i < pipe_num + 1; i++) {
+      //   waitpid();
+      // }
+      waitpid(-pgid, NULL, WUNTRACED);
+
+      tcsetpgrp(STDIN_FILENO, shell_pgid);
+
     }
 
     if (shell_is_interactive)
