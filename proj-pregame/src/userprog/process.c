@@ -26,6 +26,9 @@ static thread_func start_pthread NO_RETURN;
 static bool load(const char* file_name, void (**eip)(void), void** esp);
 bool setup_thread(void (**eip)(void), void** esp);
 
+static void push_args(char* file_name, void** pesp);
+static char* get_real_file_name(const char* file_name);
+
 /* Initializes user programs in the system by ensuring the main
    thread has a minimal PCB so that it can execute and wait for
    the first user process. Any additions to the PCB should be also
@@ -75,7 +78,7 @@ static void push_args(char* file_name, void** pesp) {
   char* token = NULL;
   char* rest;
   char* file_name_copy;
-  char* esp = (char*)*pesp;
+  char* esp = (char*) *pesp;
   char** argv;
   int argv_str_size = 0;
   int size;
@@ -110,35 +113,47 @@ static void push_args(char* file_name, void** pesp) {
   free(file_name_copy);
 
   // stack align to 0x10
-  stack_align_size = 0x10 - argv_str_size % 0x10;
+  stack_align_size = 0x10 - (argv_str_size % 0x10);
   if (argv_str_size % 0x10) {
     esp -= stack_align_size;
     memset(esp, 0, stack_align_size);
   }
 
   // push argv to stack
+  size = 0;
   // argv[argc]
   esp -= 0x4;
+  size += 0x4;
   *(char**)esp = 0;
-
+  
   // argv[i]
-  for (i = argc - 1; i >= 0; --i) {
+  for (i = argc - 1; i >= 0; i--) {
     esp -= 0x4;
+    size += 0x4;
     *(char**)esp = argv[i];
   }
 
   // argv
   char* argv0_address = esp;
   esp -= 0x4;
+  size += 0x4;
   *(char**)esp = argv0_address;
 
   // argc
   esp -= 0x4;
+  size += 0x4;
   *(int*)esp = argc;
 
   // fake return address
   esp -= 0x4;
   *(char**)esp = 0;
+
+  // stack align again
+  stack_align_size = 0x10 - (size % 0x10);
+  if (size % 0x10) {
+    esp -= stack_align_size;
+    memset(esp, 0, stack_align_size);
+  }
 
   *pesp = (void*) esp;
   free(argv);
@@ -167,8 +182,8 @@ static void start_process(void* file_name_) {
   struct thread* t = thread_current();
   struct intr_frame if_;
   bool success, pcb_success;
-
   char* real_file_name = get_real_file_name(file_name);
+
   /* Allocate process control block */
   struct process* new_pcb = malloc(sizeof(struct process));
   success = pcb_success = new_pcb != NULL;
@@ -206,7 +221,10 @@ static void start_process(void* file_name_) {
     free(pcb_to_free);
   }
 
-  push_args(file_name, &if_.esp);
+  /* Push the arguments onto the stack */
+  if (success) {
+    push_args(file_name, &if_.esp);
+  }
 
   /* Clean up. Exit on failure or jump to userspace */
   palloc_free_page(file_name);
@@ -214,9 +232,6 @@ static void start_process(void* file_name_) {
     sema_up(&temporary);
     thread_exit();
   }
-
-  /* Allocate space for userprog */
-  // if_.esp -= 0x14;
 
   /* Start the user process by simulating a return from an
      interrupt, implemented by intr_exit (in
